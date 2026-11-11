@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app import notes
+from app import auth, notes
 from app.db import connect, init_db
 from app.seed import seed
 
@@ -21,9 +21,14 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Team Notes",
-    description="Shared notes for small teams. Send X-User-Id: 1 (alice), 2 (bob) or 3 (carol).",
+    description=(
+        "Shared notes for small teams. Log in with POST /auth/login "
+        '(e.g. {"username": "alice", "password": "alice-password"}), '
+        "then click Authorize and paste the access_token."
+    ),
     lifespan=lifespan,
 )
+app.include_router(auth.router)
 app.include_router(notes.router)
 
 

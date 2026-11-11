@@ -7,12 +7,21 @@ thread pool, and a sqlite3 connection must not be shared across threads.
 import os
 import sqlite3
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
-    id   INTEGER PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE
+    id            INTEGER PRIMARY KEY,
+    name          TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL
+);
+
+-- Only a hash of each bearer token is stored, so a copy of the database
+-- does not hand out working tokens.
+CREATE TABLE IF NOT EXISTS tokens (
+    token_hash TEXT PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS teams (
@@ -72,6 +81,7 @@ def get_db() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-def utc_now() -> str:
-    # One fixed format everywhere, so sorting the text sorts by time.
-    return datetime.now(timezone.utc).isoformat()
+def utc_now(offset: timedelta = timedelta(0)) -> str:
+    # One fixed format everywhere (always with microseconds), so comparing or
+    # sorting the text compares or sorts by time.
+    return (datetime.now(timezone.utc) + offset).isoformat(timespec="microseconds")

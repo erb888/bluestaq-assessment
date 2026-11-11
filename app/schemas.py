@@ -36,3 +36,14 @@ class NoteOut(BaseModel):
 class ConflictOut(BaseModel):
     detail: str
     current: NoteOut
+
+
+class LoginIn(BaseModel):
+    username: str = Field(min_length=1, max_length=100)
+    password: str = Field(min_length=1, max_length=200)
+
+
+class TokenOut(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_at: str

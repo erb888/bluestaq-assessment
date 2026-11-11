@@ -1,30 +1,112 @@
-"""Caller identity.
+"""Authentication: password login, bearer tokens, and caller identity.
 
-This is a deliberate stand-in for real authentication: the caller states who
-they are in the X-User-Id header and we only check that the user exists, so
-anyone can claim to be anyone. It is the single place to replace with real
-auth (e.g. verifying a signed token); nothing else reads the header.
+Login exchanges a username and password for a random bearer token. Only a
+SHA-256 hash of each token is stored, with an expiry, so logout can revoke a
+token and no signing secret has to be configured. `get_current_user` is the
+only code that turns a request into a user ID.
 """
 
-import re
+import hashlib
+import hmac
+import secrets
 import sqlite3
+from datetime import timedelta
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from app.db import get_db
+from app.db import get_db, utc_now
+from app.schemas import LoginIn, TokenOut
 
-# ASCII digits only, and short enough to fit SQLite's 64-bit integers.
-_USER_ID = re.compile(r"[0-9]{1,18}")
+TOKEN_TTL = timedelta(hours=24)
+
+# scrypt cost parameters (about 16 MB of memory per hash).
+SCRYPT_N, SCRYPT_R, SCRYPT_P = 2**14, 8, 1
+
+router = APIRouter(prefix="/auth", tags=["auth"])
+# auto_error=False so a missing header is our 401, not FastAPI's 403.
+bearer = HTTPBearer(auto_error=False)
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.scrypt(password.encode(), salt=salt, n=SCRYPT_N, r=SCRYPT_R, p=SCRYPT_P)
+    return f"scrypt${SCRYPT_N}${SCRYPT_R}${SCRYPT_P}${salt.hex()}${digest.hex()}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    _, n, r, p, salt, digest = stored.split("$")
+    candidate = hashlib.scrypt(
+        password.encode(), salt=bytes.fromhex(salt), n=int(n), r=int(r), p=int(p)
+    )
+    return hmac.compare_digest(candidate.hex(), digest)
+
+
+# Checked when the username does not exist, so a failed login takes about the
+# same time whether or not the user exists.
+_DUMMY_HASH = hash_password(secrets.token_urlsafe(16))
+
+
+def hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def unauthorized(detail: str) -> HTTPException:
+    return HTTPException(
+        status.HTTP_401_UNAUTHORIZED, detail, headers={"WWW-Authenticate": "Bearer"}
+    )
+
+
+@router.post("/login", response_model=TokenOut)
+def login(payload: LoginIn, db: sqlite3.Connection = Depends(get_db)) -> TokenOut:
+    user = db.execute(
+        "SELECT id, password_hash FROM users WHERE name = ?", (payload.username,)
+    ).fetchone()
+    password_ok = verify_password(payload.password, user["password_hash"] if user else _DUMMY_HASH)
+    if user is None or not password_ok:
+        # One message for both cases, so callers cannot probe which usernames exist.
+        raise unauthorized("Invalid username or password")
+
+    token = secrets.token_urlsafe(32)
+    expires_at = utc_now(TOKEN_TTL)
+    with db:
+        db.execute(
+            "DELETE FROM tokens WHERE user_id = ? AND expires_at <= ?", (user["id"], utc_now())
+        )
+        db.execute(
+            "INSERT INTO tokens (token_hash, user_id, expires_at) VALUES (?, ?, ?)",
+            (hash_token(token), user["id"], expires_at),
+        )
+    return TokenOut(access_token=token, expires_at=expires_at)
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+def logout(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    db: sqlite3.Connection = Depends(get_db),
+) -> Response:
+    if credentials is None:
+        raise unauthorized("Missing bearer token")
+    with db:
+        cursor = db.execute(
+            "DELETE FROM tokens WHERE token_hash = ?", (hash_token(credentials.credentials),)
+        )
+    if cursor.rowcount == 0:
+        raise unauthorized("Invalid or expired token")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 def get_current_user(
-    x_user_id: str | None = Header(None, description="Seeded user ID: 1, 2 or 3"),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     db: sqlite3.Connection = Depends(get_db),
 ) -> int:
-    # Taken as a string so a malformed value is a 401, not FastAPI's default 422.
-    if x_user_id is None or not _USER_ID.fullmatch(x_user_id):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing or invalid X-User-Id header")
-    user_id = int(x_user_id)
-    if db.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone() is None:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Unknown user")
-    return user_id
+    """FastAPI dependency: the user ID behind a valid, unexpired bearer token."""
+    if credentials is None:
+        raise unauthorized("Missing bearer token")
+    row = db.execute(
+        "SELECT user_id FROM tokens WHERE token_hash = ? AND expires_at > ?",
+        (hash_token(credentials.credentials), utc_now()),
+    ).fetchone()
+    if row is None:
+        raise unauthorized("Invalid or expired token")
+    return row["user_id"]

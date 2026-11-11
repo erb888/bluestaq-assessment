@@ -1,6 +1,11 @@
 # bluestaq-assessment
 Building a backend for a note taking service shared and used by several small teams. Users need somewhere to capture and work with their notes.
 
+## Design Choices
+1. The main design choice that i made and the most impactful in my opinion was using the Google Elephant Goldfish Model (EGM). In my opinion EGM is the best framework or setup for modern agentic development. Utilizing AI to go through a thorough design stage with the agent getting user review and verification at every step with design docs generated at the end.
+2. The stack and technologies to use. I decided to go w/ a simple Python FastAPI/SQLite stack for 3 main reasons. 1 I'm very familiar with the stack and how easy it is to use. 2. Considering the time constraint i wanted to get something simple up and running as fast as possible. 3. It comes w/ native OpenAPI support so users can easily test the functionality of the app.
+3. I waffled on adding a authentication step initially due to the time constrainst but i decided to go with it since i had enough time.
+
 ## Quickstart
 
 Requires Python 3.11+.
@@ -11,8 +16,16 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-Open http://localhost:8000/docs to try every endpoint in the browser. Fill in
-the `x-user-id` field with a seeded user ID (below).
+Open http://localhost:8000/docs to try every endpoint in the browser:
+
+1. Call `POST /auth/login` with a seeded user, for example
+   `{"username": "alice", "password": "alice-password"}`.
+2. Copy `access_token` from the response.
+3. Click **Authorize** and paste the token. Every request from `/docs` now
+   sends it.
+
+If you have a `notes.db` from before login was added, delete it once. The
+`users` table gained a column, and there are no migrations.
 
 Run the tests:
 
@@ -20,29 +33,38 @@ Run the tests:
 pytest
 ```
 
-The database is a SQLite file, `notes.db`, created and seeded on startup. Set
-`NOTES_DB` to use a different path. To reset all data, stop the server and
-delete the file.
+The database is a SQLite file, `notes.db`, created and seeded on startup. Set `NOTES_DB` to use a different path. To reset all data, stop the server and delete the file.
 
 ## Seed data
 
 There are no endpoints to create users or teams, so these are created on
 startup (re-running is safe):
 
-| User | ID | Teams |
-| --- | --- | --- |
-| alice | 1 | eng (1) |
-| bob | 2 | eng (1), design (2) |
-| carol | 3 | design (2) |
+| User | ID | Password | Teams |
+| --- | --- | --- | --- |
+| alice | 1 | `alice-password` | eng (1) |
+| bob | 2 | `bob-password` | eng (1), design (2) |
+| carol | 3 | `carol-password` | design (2) |
 
-Note 1, "Welcome", belongs to `eng`.
+Note 1, "Welcome", belongs to `eng`. These passwords are demo credentials only.
 
 ## API
 
-Every request needs an `X-User-Id` header (see [Trade-offs](#trade-offs)).
+### Authentication
+
+1. `POST /auth/login` with `{"username", "password"}` returns
+   `{"access_token", "token_type": "bearer", "expires_at"}`.
+2. Send the token on every other request as
+   `Authorization: Bearer <access_token>`.
+3. Tokens last 24 hours. `POST /auth/logout` revokes the token you send.
+
+The server keeps only a SHA-256 hash of each token. Passwords are stored as
+salted scrypt hashes.
 
 | Method | Path | Body / query | Success |
 | --- | --- | --- | --- |
+| POST | `/auth/login` | `{"username", "password"}` | 200, token |
+| POST | `/auth/logout` | | 204 |
 | POST | `/teams/{team_id}/notes` | `{"title", "body"}` | 201, note |
 | GET | `/teams/{team_id}/notes` | `?q=text` (optional) | 200, list of notes |
 | GET | `/notes/{note_id}` | | 200, note |
@@ -67,7 +89,7 @@ A note looks like:
 
 | Case | Status |
 | --- | --- |
-| `X-User-Id` missing, not a number, or not a known user | 401 |
+| Bearer token missing, unknown, expired or logged out; or wrong login | 401 |
 | List or create in a team you are not in | 403 |
 | Note does not exist, or is in a team you are not in | 404 |
 | Update or delete with a stale `version` | 409 |
@@ -84,21 +106,29 @@ without another request:
 ### Example: two people edit the same note
 
 ```sh
+login() {  # prints an access token for user $1
+  curl -s -X POST localhost:8000/auth/login -H 'Content-Type: application/json' \
+    -d "{\"username\": \"$1\", \"password\": \"$1-password\"}" \
+    | python3 -c 'import sys, json; print(json.load(sys.stdin)["access_token"])'
+}
+BOB=$(login bob); ALICE=$(login alice); CAROL=$(login carol)
+
 # bob reads note 1 (version 1) and saves an edit
-curl -X PATCH localhost:8000/notes/1 -H 'X-User-Id: 2' \
+curl -X PATCH localhost:8000/notes/1 -H "Authorization: Bearer $BOB" \
   -H 'Content-Type: application/json' -d '{"version": 1, "body": "bob was here"}'
 # → 200, "version": 2
 
 # alice also read version 1 and tries to save
-curl -X PATCH localhost:8000/notes/1 -H 'X-User-Id: 1' \
+curl -X PATCH localhost:8000/notes/1 -H "Authorization: Bearer $ALICE" \
   -H 'Content-Type: application/json' -d '{"version": 1, "body": "alice was here"}'
 # → 409, "current" holds bob's text at version 2; alice's text is not saved
 
 # other examples
-curl localhost:8000/teams/1/notes?q=welcome -H 'X-User-Id: 1'
-curl -X POST localhost:8000/teams/2/notes -H 'X-User-Id: 3' \
+curl 'localhost:8000/teams/1/notes?q=welcome' -H "Authorization: Bearer $ALICE"
+curl -X POST localhost:8000/teams/2/notes -H "Authorization: Bearer $CAROL" \
   -H 'Content-Type: application/json' -d '{"title": "Mockups", "body": "v2"}'
-curl -X DELETE 'localhost:8000/notes/1?version=2' -H 'X-User-Id: 1'
+curl -X DELETE 'localhost:8000/notes/1?version=2' -H "Authorization: Bearer $ALICE"
+curl -X POST localhost:8000/auth/logout -H "Authorization: Bearer $ALICE"
 ```
 
 ## Design
@@ -109,7 +139,8 @@ weighed, is in
 [docs/designs/team-notes-rest-service.md](docs/designs/team-notes-rest-service.md).
 
 ```text
-users(id, name)          teams(id, name)
+users(id, name, password_hash)                teams(id, name)
+tokens(token_hash, user_id, expires_at)       -- active login tokens
 memberships(user_id, team_id)                 -- who is in which team
 notes(id, team_id, title, body, version,
       created_by, updated_by, created_at, updated_at)
@@ -119,7 +150,7 @@ notes(id, team_id, title, body, version,
 | --- | --- |
 | `app/main.py` | App setup. Creates the schema and seed data on startup. |
 | `app/db.py` | Schema, and one SQLite connection per request. |
-| `app/auth.py` | `get_current_user`: the only code that reads `X-User-Id`. |
+| `app/auth.py` | Login, logout, password hashing, and `get_current_user` (the only code that turns a token into a user). |
 | `app/notes.py` | The note routes and their SQL. |
 | `app/schemas.py` | Request and response models and their validation. |
 | `app/seed.py` | Seed data (also `python -m app.seed`). |
@@ -128,8 +159,7 @@ notes(id, team_id, title, body, version,
 Two rules carry most of the correctness:
 
 1. **Team isolation is inside the SQL.** Every note query joins on
-   `memberships` for the caller. No route checks access in a separate step it
-   could forget.
+   `memberships` for the caller. No route checks access in a separate step it could forget.
 2. **The version check is one statement.**
    `UPDATE … WHERE id = ? AND version = ? AND <caller is in the team>`. SQLite
    applies one write at a time, so if two requests send the same version, only
@@ -139,10 +169,17 @@ Two rules carry most of the correctness:
 
 ## Trade-offs
 
-- **Identity is a header, not real auth.** Anyone can send any `X-User-Id`. I
-  took this shortcut to keep the focus on the notes logic. `get_current_user`
-  in `app/auth.py` is the only code that reads the header, so real auth (for
-  example a signed token) would replace that one function.
+- **Stored random tokens rather than signed tokens (JWT).**
+  - A login token is a random string. The server keeps its hash and expiry in
+    the `tokens` table.
+  - For: logout takes effect immediately, there is no signing secret to
+    configure or leak, and no new dependency.
+  - Against: every request does one extra database lookup, which a signed
+    token would avoid.
+  - `get_current_user` is still the only code that decides who the caller is.
+- **No sign-up or password change.** Users come only from seed data, with
+  published demo passwords. Login has no rate limit, so repeated password
+  guessing is not slowed down beyond scrypt's own cost.
 - **Version in the body rather than `ETag`/`If-Match`.** `ETag` is the standard
   HTTP way. A body field is easier to try from `/docs` and curl, and shows the
   same idea.
@@ -167,7 +204,7 @@ Two rules carry most of the correctness:
 
 ## Next steps
 
-- Real authentication in place of the `X-User-Id` header.
+- Sign-up, password change, and rate limiting on login.
 - Endpoints to manage users, teams and memberships, plus roles within a team.
 - Pagination (`limit`/`offset`) on the list endpoint.
 - `ETag`/`If-Match` support.

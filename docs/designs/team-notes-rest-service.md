@@ -6,6 +6,39 @@
 
 --------------------------------------------------------------------------------
 
+## Amendment (2026-11-11): real authentication
+
+The `X-User-Id` header stand-in described below has been replaced by real
+authentication with stored random tokens:
+
+1.  `POST /auth/login` checks a username and password against a salted scrypt
+    hash in `users.password_hash`. It returns a random token
+    (`secrets.token_urlsafe(32)`) that expires after 24 hours. An unknown user
+    and a wrong password get the same 401.
+2.  Only the token's SHA-256 hash is stored, in a new
+    `tokens(token_hash, user_id, expires_at)` table.
+3.  Clients send `Authorization: Bearer <token>`. `get_current_user` looks up
+    the hash among tokens that have not expired, and returns 401 otherwise.
+    It is still the only code that decides who the caller is, so the note
+    routes and their team checks did not change.
+4.  `POST /auth/logout` deletes the token's row, which revokes it immediately.
+
+Signed tokens (JWT) were rejected by author. They cannot be revoked before
+they expire, and they need a signing secret and a new dependency. The cost of
+stored tokens is one extra database lookup per request.
+
+The amendment supersedes these parts of the design below:
+
+*   The `X-User-Id` header.
+*   The Non-Goal "Real authentication".
+*   Alternative D.
+*   The 401 row of the status-code table.
+
+Seeded users have demo passwords (`<name>-password`). Sign-up, password change
+and login rate limiting remain out of scope.
+
+--------------------------------------------------------------------------------
+
 ## Overview
 
 A REST backend where people on several small teams keep shared notes. A user
