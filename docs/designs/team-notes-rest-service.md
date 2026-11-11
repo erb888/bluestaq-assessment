@@ -33,7 +33,7 @@ version it last read. If someone else has saved since then, the service refuses
 the write with `409 Conflict` and returns the current note, so the client can
 merge and retry.
 
-Real login is out of scope for the time budget. The caller says who they are
+Real login is out of scope. The caller says who they are
 in an `X-User-Id` header, and the service checks that the user exists. Anyone
 can claim to be anyone, so the README states this as the main known gap. All
 identity handling lives in one function, so real authentication would replace
@@ -41,7 +41,7 @@ that function and leave the rest alone.
 
 ## Goals
 
-*   **Runs on first try.** A judge with Python 3.11+ can go from a fresh clone
+*   **Runs on first try.** A new user with Python 3.11+ can go from a fresh clone
     to a working API with three commands (create a virtual environment, install
     pinned requirements, start the server). No manual data setup is needed,
     because fixed users, teams and one sample note are seeded at startup.
@@ -66,7 +66,7 @@ that function and leave the rest alone.
 *   **Real authentication** (passwords, tokens, sessions). Replaced by the
     header stand-in described above.
 *   **Endpoints to manage users, teams or memberships.** Seed data covers the
-    assessment's needs.
+    current needs.
 *   **Roles inside a team** (owner, viewer). All members have equal rights.
 *   **Private notes or per-note sharing lists.** A note is visible to its whole
     team and no one else.
@@ -77,14 +77,14 @@ that function and leave the rest alone.
 *   **Database migrations or an ORM.** Changing the schema means deleting the
     database file.
 *   **Production deployment concerns**: Docker, multiple server instances,
-    request-ID logging. Docker is added only if 15 minutes remain at the end.
+    request-ID logging.
 
 ## Critical User Journeys (CUJs)
 
-### CUJ 1: Judge runs the service and creates a note
+### CUJ 1: A new user runs the service and creates a note
 
 *   **Given**: A fresh clone, Python 3.11+, no `notes.db` file.
-*   **When**: The judge installs requirements, starts the server, opens
+*   **When**: The user installs requirements, starts the server, opens
     `/docs`, and sends `POST /teams/1/notes` with `X-User-Id: 1`.
 *   **Then**: The database file and seed data are created on startup. The
     response is `201` with the note, `version: 1`, and `created_by: 1`.
@@ -185,7 +185,7 @@ updated_by, created_at, updated_at`.
 Validation:
 
 *   `title` is 1-200 characters.
-*   `body` is at most 100,000 characters and may be empty.
+*   `body` is at most 1,000 characters and may be empty.
 *   A PATCH must include `version` and at least one of `title` or `body`.
     Otherwise it returns 422.
 
@@ -260,8 +260,7 @@ at this size.
 
 ### Alternative A: Last write wins
 
-*   **Pros**: No version field. Clients do not need to track anything. About 15
-    minutes less work.
+*   **Pros**: No version field. Clients do not need to track anything. Less code.
 *   **Cons**: When two teammates save at the same time, one person's edit is
     lost and neither is told.
 *   **Reason for Rejection**: Rejected by author: silent data loss is the main
@@ -279,19 +278,18 @@ at this size.
 
 *   **Pros**: The standard HTTP way to do this. Clients and proxies understand
     it, and a stale write gets `412 Precondition Failed`.
-*   **Cons**: Harder to try by hand from `/docs` or curl, because the judge has
+*   **Cons**: Harder to try by hand from `/docs` or curl, because the user has
     to copy a header between requests. More code to parse and set headers.
 *   **Reason for Rejection**: Rejected by author: the version field in the body
-    shows the same idea and is easier to demo in the time available. The README
+    shows the same idea and is easier to try by hand. The README
     names `ETag` as the standard alternative.
 
 ### Alternative D: Real authentication (passwords or signed tokens)
 
 *   **Pros**: Callers cannot claim to be someone else.
-*   **Cons**: About 30-45 minutes for password hashing, token issue and
-    checking, plus tests. Little of it relates to the notes problem.
-*   **Reason for Rejection**: Rejected by author: it does not fit the time
-    budget. Identity is in one function (`get_current_user`), so adding real
+*   **Cons**: Password hashing, token issue and checking, plus tests. Little of it relates to the notes problem.
+*   **Reason for Rejection**: Rejected by author: it is outside the scope of
+    this service. Identity is in one function (`get_current_user`), so adding real
     auth later changes only that function.
 
 ### Alternative E: Private notes or per-note share lists
@@ -309,7 +307,7 @@ at this size.
 *   **Cons**: Setup and configuration time. More concepts for a reader to
     follow for five endpoints.
 *   **Reason for Rejection**: Rejected by author: raw `sqlite3` with a short
-    schema file is quicker to write and lets judges see every query directly.
+    schema file is quicker to write and lets readers see every query directly.
 
 ### Alternative G: Layered packages (routers, services, repositories)
 
@@ -349,8 +347,7 @@ at this size.
 *   **Cons**: Deletes a note that a teammate edited a moment earlier, without
     either person seeing the edit.
 *   **Reason for Rejection**: Rejected by author: same reasoning as Alternative
-    A. If time runs short, the fallback is to make `version` optional on delete
-    and document it.
+    A.
 
 ### Alternative L: `async def` handlers with `sqlite3`
 
@@ -363,10 +360,10 @@ at this size.
 ### Alternative M: Docker as the main way to run it
 
 *   **Pros**: Same environment everywhere.
-*   **Cons**: Debugging an image under time pressure risks the "must run"
-    requirement. Judges may not have Docker running.
-*   **Reason for Rejection**: Rejected by author: plain Python is the main path.
-    Docker is added only if 15 minutes remain.
+*   **Cons**: Another tool to install and debug. Not every user has Docker
+    running.
+*   **Reason for Rejection**: Rejected by author: plain Python is the simplest
+    way to run it. Docker can be added later.
 
 --------------------------------------------------------------------------------
 
@@ -393,8 +390,8 @@ at this size.
 
 ## Detailed Implementation Plan
 
-Build order follows the timebox: files 1-8 (0:00-1:15), files 9-10
-(1:15-1:50), files 11-12 (1:50-2:15), then a fresh-clone run (2:15-2:30).
+Build order: application files first, then tests, then documentation, then
+a run from a fresh clone.
 
 ### Target Files to Create/Modify
 
@@ -404,7 +401,7 @@ Build order follows the timebox: files 1-8 (0:00-1:15), files 9-10
 *   **Proposed Changes**: Pin exact versions of `fastapi`, `uvicorn`, `pytest`
     and `httpx` (needed by FastAPI's `TestClient`), using the versions that are
     installed when the code is written. Pydantic v2 comes in with FastAPI. Exact
-    pins mean the judge installs what was tested.
+    pins mean every install gets what was tested.
 
 #### 2. `.gitignore` (Create)
 
@@ -472,10 +469,10 @@ Build order follows the timebox: files 1-8 (0:00-1:15), files 9-10
 
 *   **Type / Scope**: Request and response models (Pydantic v2).
 *   **Proposed Changes**:
-    *   `NoteCreate`: `title: str` (1-200 characters), `body: str` (0-100,000
+    *   `NoteCreate`: `title: str` (1-200 characters), `body: str` (0-1,000
         characters, default `""`).
     *   `NoteUpdate`: `version: int` (≥ 1), `title: str | None` (1-200),
-        `body: str | None` (≤ 100,000). A model validator raises an error if
+        `body: str | None` (≤ 1,000). A model validator raises an error if
         both `title` and `body` are `None`, and FastAPI turns that into 422.
         An explicit `null` counts as "not sent".
     *   `NoteOut`: `id, team_id, title, body, version, created_by, updated_by,
@@ -516,7 +513,7 @@ Build order follows the timebox: files 1-8 (0:00-1:15), files 9-10
         integer. It runs `DELETE … WHERE id AND version AND team check`, and
         no row deleted is handled the same way as in PATCH (404 or 409).
     *   `get_me` (`GET /me`, returning the caller's ID, name and teams) is
-        optional and only built if time remains.
+        optional and not built.
 
 #### 9. `app/main.py` (Create)
 
@@ -564,7 +561,7 @@ Build order follows the timebox: files 1-8 (0:00-1:15), files 9-10
 
 #### 12. `README.md` (Modify)
 
-*   **Type / Scope**: Documentation for judges.
+*   **Type / Scope**: Documentation for users and reviewers.
 *   **Proposed Changes**: Keep the existing first two lines. Add, in order:
     *   **Quickstart**: three commands, plus `pytest`.
     *   **Seed data**: the user and team table.
@@ -588,14 +585,14 @@ Build order follows the timebox: files 1-8 (0:00-1:15), files 9-10
 *   **Type / Scope**: Agent contract file.
 *   **Proposed Changes**: Replace the `<test-command>` placeholder with
     `pytest`. Rerun `/egm:egm-bootstrap . target_filename=CLAUDE.md` after the
-    code exists, if time allows.
+    code exists.
 
 ### Verification Plan
 
 *   **Compilation/Build**: `pip install -r requirements.txt` in a new virtual
     environment succeeds.
 *   **Unit Tests**: `pytest` passes, all 11 tests, in a few seconds.
-*   **Static Analysis & Linting**: Not configured. Skipped for the time budget.
+*   **Static Analysis & Linting**: Not configured.
 *   **Test Coverage Requirement**: Every row of the status-code table has at
     least one test. No percentage target.
 *   **E2E/Integration**: From a fresh clone in a new directory:

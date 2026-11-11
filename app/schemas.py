@@ -1,7 +1,7 @@
 from pydantic import BaseModel, Field, model_validator
 
 TITLE_MAX = 200
-BODY_MAX = 100_000
+BODY_MAX = 1_000
 
 
 class NoteCreate(BaseModel):

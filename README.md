@@ -140,7 +140,7 @@ Two rules carry most of the correctness:
 ## Trade-offs
 
 - **Identity is a header, not real auth.** Anyone can send any `X-User-Id`. I
-  took this shortcut to spend the time on the notes logic. `get_current_user`
+  took this shortcut to keep the focus on the notes logic. `get_current_user`
   in `app/auth.py` is the only code that reads the header, so real auth (for
   example a signed token) would replace that one function.
 - **Version in the body rather than `ETag`/`If-Match`.** `ETag` is the standard

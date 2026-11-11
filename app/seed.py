@@ -1,4 +1,5 @@
-"""Fixed seed data so the API is usable on first run.
+"""
+Fixed seed data so the API is usable on first run.
 
 There are no endpoints to manage users or teams, so these rows are the only
 way in. Fixed IDs plus INSERT OR IGNORE make seeding safe to repeat.
